@@ -1,0 +1,47 @@
+---
+# Rôle : home-assistant — Home Assistant Core
+# AC#5, AC#8 — Story 9-1
+# Déploie Home Assistant en container Docker sur le host
+# et écrit la route Traefik pour homeassistant.{slug}.homegalaxy.io
+
+- name: Créer le répertoire de configuration Home Assistant
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/homeassistant"
+    state: directory
+    mode: "0755"
+
+- name: Pull image Home Assistant
+  ansible.builtin.command:
+    cmd: docker pull ghcr.io/home-assistant/home-assistant:stable
+  changed_when: true
+
+- name: Supprimer container Home Assistant existant si présent
+  ansible.builtin.command:
+    cmd: docker rm -f homeassistant-{{ capsule_id }}
+  ignore_errors: true
+  changed_when: true
+
+- name: Démarrer container Home Assistant
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name homeassistant-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ homeassistant_port }}:8123
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/homeassistant:/config
+      --privileged
+      ghcr.io/home-assistant/home-assistant:stable
+  changed_when: true
+
+- name: Attendre que Home Assistant soit disponible
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ homeassistant_port }}"
+    timeout: 120
+    delay: 10
+
+- name: Écrire la route Traefik pour homeassistant.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/homeassistant-{{ capsule_id }}.yml"
+    mode: "0644"

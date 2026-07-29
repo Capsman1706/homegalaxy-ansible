@@ -1,0 +1,74 @@
+---
+# Rôle : nextcloud — cloud personnel Nextcloud
+# Story 9.4.1 AC3 — pattern adguard (docker run + template route Traefik).
+#
+# ⚠️ Décision MVP (cadrage 2026-07-20) : Nextcloud en SQLite — PAS de container
+# PostgreSQL dédié. C'est une vitrine mono-utilisateur/famille ; la migration
+# SQLite → PostgreSQL est supportée nativement par Nextcloud (occ db:convert-type)
+# le jour où un usage intensif le justifie.
+#
+# Findings runtime 9.3 intégrés d'origine :
+#   - readiness via docker inspect (jamais de wait_for 127.0.0.1 dans le worker)
+#   - route écrite dans {{ traefik_dynamic_dir }} (mount worker /etc/traefik/dynamic)
+#   - idempotence ARCH-R5 : rm -f avant run → re-run sans « name already in use »
+# Extravars requis : capsule_id, racine_slug, nextcloud_port (allocateur AC4).
+
+- name: Créer le répertoire de données Nextcloud pour la capsule
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/nextcloud"
+    state: directory
+    mode: "0755"
+
+- name: Pull image Nextcloud (arm64 validée spike 2026-07-20)
+  ansible.builtin.command:
+    cmd: docker pull nextcloud:latest
+  changed_when: true
+
+- name: Supprimer container Nextcloud existant si présent (idempotence ARCH-R5)
+  ansible.builtin.command:
+    cmd: docker rm -f nextcloud-{{ capsule_id }}
+  failed_when: false
+  changed_when: true
+
+# Review 9.4.1 : SQLITE_DATABASE et NEXTCLOUD_TRUSTED_DOMAINS RETIRÉS — dans
+# l'image officielle, ces envs ne sont lus par l'entrypoint QUE si
+# NEXTCLOUD_ADMIN_USER/PASSWORD déclenchent l'auto-install (absents ici : pas
+# de canal sûr pour communiquer un mot de passe généré au MVP). L'installation
+# se fait via l'assistant web au premier accès — y CHOISIR SQLite (décision
+# vitrine MVP, cf. en-tête). OVERWRITEPROTOCOL est conservé : lu au runtime
+# par reverse-proxy.config.php de l'image, indépendant de l'auto-install
+# (derrière Traefik HTTPS, les URLs générées doivent être en https).
+- name: Démarrer container Nextcloud (SQLite via assistant web — décision vitrine MVP)
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name nextcloud-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ nextcloud_port }}:80
+      -e OVERWRITEPROTOCOL=https
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/nextcloud:/var/www/html
+      nextcloud:latest
+  changed_when: true
+
+# Readiness (review 9.4.1) : State.Status distingue « démarre » de « crashé » —
+# exited/dead termine la boucle immédiatement (fast-fail).
+- name: Attendre que Nextcloud soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} nextcloud-{{ capsule_id }}
+  register: nextcloud_state
+  until: (nextcloud_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Vérifier que Nextcloud est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container nextcloud-{{ capsule_id }} en état '{{ nextcloud_state.stdout | trim }}' (attendu : running)"
+  when: (nextcloud_state.stdout | trim) != "running"
+
+- name: Écrire la route Traefik pour nextcloud.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-nextcloud.yml"
+    mode: "0644"

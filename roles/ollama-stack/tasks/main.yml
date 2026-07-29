@@ -1,0 +1,117 @@
+---
+# Rôle : ollama-stack — Ollama LLM + Open WebUI
+# Story 9-1 (AC#7, AC#8) · fixes runtime Story 9.4.1 AC3 :
+#   - wait_for 127.0.0.1 supprimé → readiness docker inspect
+#   - route écrite dans {{ traefik_dynamic_dir }} (mount worker /etc/traefik/dynamic)
+#   - idempotence ARCH-R5 : rm -f avant run → re-run sans « name already in use »
+#   - modèle paramétrable : ollama_model (défaut tinyllama — dev/Pi-friendly),
+#     validé côté backend contre models[] du manifest (AC5)
+#   - ollama_skip_pull (défaut false) : saute le pull du modèle — usage tests
+#     runtime rapides uniquement, jamais en prod (le modèle manquerait)
+# Extravars requis : capsule_id, racine_slug, ollama_port, openwebui_port (AC4).
+
+- name: Créer le répertoire de données Ollama
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/ollama"
+    state: directory
+    mode: "0755"
+
+- name: Créer le répertoire de données Open WebUI
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/openwebui"
+    state: directory
+    mode: "0755"
+
+- name: Pull image Ollama
+  ansible.builtin.command:
+    cmd: docker pull ollama/ollama:latest
+  changed_when: true
+
+- name: Supprimer container Ollama existant si présent (idempotence ARCH-R5)
+  ansible.builtin.command:
+    cmd: docker rm -f ollama-{{ capsule_id }}
+  failed_when: false
+  changed_when: true
+
+- name: Démarrer container Ollama (inférence CPU)
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name ollama-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ ollama_port }}:11434
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/ollama:/root/.ollama
+      ollama/ollama:latest
+  changed_when: true
+
+# Readiness (review 9.4.1) : on inspecte State.Status pour distinguer
+# « démarre encore » d'« a crashé » — exited/dead termine la boucle
+# immédiatement au lieu de consommer tout le budget de retries.
+- name: Attendre qu'Ollama soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} ollama-{{ capsule_id }}
+  register: ollama_state
+  until: (ollama_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Vérifier qu'Ollama est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container ollama-{{ capsule_id }} en état '{{ ollama_state.stdout | trim }}' (attendu : running)"
+  when: (ollama_state.stdout | trim) != "running"
+
+- name: Télécharger le modèle {{ ollama_model | default('tinyllama') }}
+  ansible.builtin.command:
+    cmd: docker exec ollama-{{ capsule_id }} ollama pull {{ ollama_model | default('tinyllama') }}
+  changed_when: true
+  when: not (ollama_skip_pull | default(false) | bool)
+
+- name: Pull image Open WebUI
+  ansible.builtin.command:
+    cmd: docker pull ghcr.io/open-webui/open-webui:main
+  changed_when: true
+
+- name: Supprimer container Open WebUI existant si présent (idempotence ARCH-R5)
+  ansible.builtin.command:
+    cmd: docker rm -f openwebui-{{ capsule_id }}
+  failed_when: false
+  changed_when: true
+
+# Volume /app/backend/data (review 9.4.1 C2) : Open WebUI stocke comptes,
+# conversations et RAG dans une SQLite interne — sans volume, le rm -f de
+# l'idempotence ARCH-R5 détruisait toutes les données à chaque re-run.
+- name: Démarrer container Open WebUI
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name openwebui-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ openwebui_port }}:8080
+      -e OLLAMA_BASE_URL=http://host.docker.internal:{{ ollama_port }}
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/openwebui:/app/backend/data
+      --add-host host.docker.internal:host-gateway
+      ghcr.io/open-webui/open-webui:main
+  changed_when: true
+
+- name: Attendre qu'Open WebUI soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} openwebui-{{ capsule_id }}
+  register: openwebui_state
+  until: (openwebui_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 24
+  delay: 5
+  changed_when: false
+
+- name: Vérifier qu'Open WebUI est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container openwebui-{{ capsule_id }} en état '{{ openwebui_state.stdout | trim }}' (attendu : running)"
+  when: (openwebui_state.stdout | trim) != "running"
+
+- name: Écrire la route Traefik pour openwebui.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-openwebui.yml"
+    mode: "0644"

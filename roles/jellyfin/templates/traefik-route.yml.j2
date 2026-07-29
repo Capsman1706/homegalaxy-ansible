@@ -1,0 +1,16 @@
+http:
+  routers:
+    jellyfin-{{ capsule_id }}:
+      rule: "Host(`jellyfin.{{ racine_slug }}.homegalaxy.io`)"
+      entryPoints:
+        - websecure
+      service: jellyfin-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+      middlewares:
+        - secure-headers
+  services:
+    jellyfin-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{{ jellyfin_port }}"

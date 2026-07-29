@@ -1,0 +1,16 @@
+http:
+  routers:
+    nextcloud-{{ capsule_id }}:
+      rule: "Host(`nextcloud.{{ racine_slug }}.homegalaxy.io`)"
+      entryPoints:
+        - websecure
+      service: nextcloud-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+      middlewares:
+        - secure-headers
+  services:
+    nextcloud-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{{ nextcloud_port }}"

@@ -1,0 +1,16 @@
+http:
+  routers:
+    openwebui-{{ capsule_id }}:
+      rule: "Host(`openwebui.{{ racine_slug }}.homegalaxy.io`)"
+      entryPoints:
+        - websecure
+      service: openwebui-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+      middlewares:
+        - secure-headers
+  services:
+    openwebui-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{{ openwebui_port }}"

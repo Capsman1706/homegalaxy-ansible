@@ -1,0 +1,16 @@
+http:
+  routers:
+    adguard-{{ capsule_id }}:
+      rule: "Host(`adguard.{{ racine_slug }}.homegalaxy.io`)"
+      entryPoints:
+        - websecure
+      service: adguard-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+      middlewares:
+        - secure-headers
+  services:
+    adguard-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{{ adguard_port }}"

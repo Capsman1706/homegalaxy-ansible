@@ -1,0 +1,12 @@
+tcp:
+  routers:
+    minecraft-{{ capsule_id }}:
+      rule: "HostSNI(`*`)"
+      entryPoints:
+        - minecraft
+      service: minecraft-{{ capsule_id }}-svc
+  services:
+    minecraft-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - address: "host.docker.internal:{{ minecraft_port }}"

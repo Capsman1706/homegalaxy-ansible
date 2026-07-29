@@ -1,0 +1,8 @@
+---
+# Les rôles viennent du monorepo box tels quels (copie exacte, story 9.4.3b) :
+# profil relaxed + line-length off pour ne pas exiger un reformatage qui
+# casserait la garantie « diff vide à l'extraction ».
+extends: relaxed
+
+rules:
+  line-length: disable

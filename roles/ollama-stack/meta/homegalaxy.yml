@@ -1,0 +1,10 @@
+---
+# Contrat containers cross-repo HomeGalaxy (ARCH-R6, story 9.4.3b).
+# Valeurs = préfixes réels des `--name {prefix}-{{ capsule_id }}` de tasks/main.yml.
+# Vérifié par la CI du repo ET par le test d'intégrité backend contre le clone épinglé.
+# ⚠️ Slug catalogue = `ollama-webui`, dossier = `ollama-stack/` — la traduction
+# vit dans le `local_path` du catalogue, jamais ici. Ce rôle démarre DEUX
+# containers (Ollama + Open WebUI), d'où les deux préfixes.
+container_prefixes:
+  - ollama
+  - openwebui

@@ -1,0 +1,30 @@
+---
+# CI minimale du repo de rôles marketplace (story 9.4.3b — AC1).
+# 1. Lint YAML des rôles (les templates .j2 sont exclus : Jinja ≠ YAML pur).
+# 2. Contrat containers : chaque `--name` de tasks/main.yml doit être couvert
+#    par le meta/homegalaxy.yml du même rôle — le contrat ne drifte pas ici.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer yamllint + pyyaml
+        run: pip install yamllint pyyaml
+
+      - name: Lint YAML des rôles
+        run: yamllint -c .yamllint roles/
+
+      - name: Contrat containers (--name ↔ meta/homegalaxy.yml)
+        run: python3 .github/scripts/check_container_contract.py

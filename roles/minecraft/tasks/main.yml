@@ -1,0 +1,58 @@
+---
+# Rôle : minecraft — Serveur Minecraft Java + Dynmap
+# AC#6, AC#8 — Story 9-1
+# Déploie itzg/minecraft-server avec Dynmap plugin
+# Expose port TCP 25565 (client Java) via Traefik + port HTTP Dynmap
+
+- name: Créer le répertoire de données Minecraft
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/minecraft"
+    state: directory
+    mode: "0755"
+
+- name: Pull image Minecraft Server
+  ansible.builtin.command:
+    cmd: docker pull itzg/minecraft-server:latest
+  changed_when: true
+
+- name: Supprimer container Minecraft existant si présent
+  ansible.builtin.command:
+    cmd: docker rm -f minecraft-{{ capsule_id }}
+  ignore_errors: true
+  changed_when: true
+
+- name: Démarrer container Minecraft Server avec Dynmap
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name minecraft-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ minecraft_port }}:25565
+      -p {{ dynmap_port }}:8123
+      -e EULA=TRUE
+      -e TYPE=PAPER
+      -e VERSION=LATEST
+      -e MEMORY=2G
+      -e MODRINTH_PROJECTS=dynmap
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/minecraft:/data
+      itzg/minecraft-server:latest
+  changed_when: true
+
+- name: Attendre que le serveur Minecraft soit disponible (port 25565)
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ minecraft_port }}"
+    timeout: 180
+    delay: 15
+
+- name: Écrire la route Traefik HTTP pour dynmap.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route-http.yml.j2
+    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/dynmap-{{ capsule_id }}.yml"
+    mode: "0644"
+
+- name: Écrire la route Traefik TCP pour port 25565
+  ansible.builtin.template:
+    src: traefik-route-tcp.yml.j2
+    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/minecraft-tcp-{{ capsule_id }}.yml"
+    mode: "0644"

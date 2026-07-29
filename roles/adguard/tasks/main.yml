@@ -1,0 +1,71 @@
+---
+# Rôle : adguard — AdGuard Home DNS + filtrage pub
+# Story 9-1 (AC#4, AC#8) · fixes runtime Story 9.4.1 AC3 :
+#   - wait_for 127.0.0.1 supprimé → readiness docker inspect (le worker n'est
+#     pas le host : les ports publiés n'y sont pas joignables)
+#   - route écrite dans {{ traefik_dynamic_dir }} (mount worker /etc/traefik/dynamic —
+#     l'ancien layout /opt/homegalaxy/data/... n'existe pas)
+#   - idempotence ARCH-R5 : rm -f avant run → re-run sans « name already in use »
+#
+# ⚠️ Port DNS 53 NON publié (décision honnêteté vitrine AC2) : seule l'UI est
+# exposée ({{ adguard_port }}→3000). La publication 53:53/udp+tcp est évaluée
+# au tir réel (collision systemd-resolved host possible) — cf. Completion Notes.
+# Extravars requis : capsule_id, racine_slug, adguard_port (allocateur AC4).
+
+# Review 9.4.1 : /work et /conf sur deux répertoires SÉPARÉS (convention
+# AdGuard Home officielle) — un même host-dir monté deux fois mélangeait
+# données de travail et configuration.
+- name: Créer les répertoires de données AdGuard pour la capsule
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/adguard/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - work
+    - conf
+
+- name: Pull image AdGuard Home
+  ansible.builtin.command:
+    cmd: docker pull adguard/adguardhome:latest
+  changed_when: true
+
+- name: Supprimer container AdGuard existant si présent (idempotence ARCH-R5)
+  ansible.builtin.command:
+    cmd: docker rm -f adguard-{{ capsule_id }}
+  failed_when: false
+  changed_when: true
+
+- name: Démarrer container AdGuard Home
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name adguard-{{ capsule_id }}
+      --restart unless-stopped
+      -p {{ adguard_port }}:3000
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/adguard/work:/opt/adguardhome/work
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/adguard/conf:/opt/adguardhome/conf
+      adguard/adguardhome:latest
+  changed_when: true
+
+# Readiness (review 9.4.1) : State.Status distingue « démarre » de « crashé » —
+# exited/dead termine la boucle immédiatement (fast-fail).
+- name: Attendre qu'AdGuard soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} adguard-{{ capsule_id }}
+  register: adguard_state
+  until: (adguard_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Vérifier qu'AdGuard est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container adguard-{{ capsule_id }} en état '{{ adguard_state.stdout | trim }}' (attendu : running)"
+  when: (adguard_state.stdout | trim) != "running"
+
+- name: Écrire la route Traefik pour adguard.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-adguard.yml"
+    mode: "0644"

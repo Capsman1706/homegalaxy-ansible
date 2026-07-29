@@ -1,0 +1,16 @@
+http:
+  routers:
+    homeassistant-{{ capsule_id }}:
+      rule: "Host(`homeassistant.{{ racine_slug }}.homegalaxy.io`)"
+      entryPoints:
+        - websecure
+      service: homeassistant-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+      middlewares:
+        - secure-headers
+  services:
+    homeassistant-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{{ homeassistant_port }}"

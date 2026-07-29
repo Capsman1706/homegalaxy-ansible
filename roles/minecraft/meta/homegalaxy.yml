@@ -1,0 +1,8 @@
+---
+# Contrat containers cross-repo HomeGalaxy (ARCH-R6, story 9.4.3b).
+# Valeurs = préfixes réels des `--name {prefix}-{{ capsule_id }}` de tasks/main.yml.
+# Vérifié par la CI du repo ET par le test d'intégrité backend contre le clone épinglé.
+# ⚠️ Slug catalogue = `minecraft-server`, dossier = `minecraft/` — la traduction
+# vit dans le `local_path` du catalogue, jamais ici.
+container_prefixes:
+  - minecraft
