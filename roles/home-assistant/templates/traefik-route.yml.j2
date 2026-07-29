@@ -13,6 +13,14 @@ http:
       service: homeassistant-{{ capsule_id }}-svc
       tls:
         certResolver: cloudflare
+{% if service_wildcard_domain is defined and service_wildcard_domain %}
+        # Lot C story 9.2.6 : un SEUL certificat par box. Sans ce `domains`,
+        # Traefik demande un certificat PAR hostname (limite LE ~50/semaine sur
+        # le domaine enregistre, partage par toute la flotte). Absent => ancien
+        # comportement per-host, la route reste valide.
+        domains:
+          - main: "{{ service_wildcard_domain }}"
+{% endif %}
       middlewares:
         - secure-headers
   services:
