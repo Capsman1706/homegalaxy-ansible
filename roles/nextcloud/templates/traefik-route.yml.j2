@@ -1,7 +1,13 @@
+{#- Hostnames calculés par la BOX (party 2026-07-29) — la politique de
+    nommage ne vit PLUS ici : `{sub}_host` = canonique
+    `{sub}-{capsule_slug}.{racine}.homegalaxy.io` (unique par capsule),
+    `{sub}_host_alias` = alias court, servi uniquement pour la capsule
+    générale. Le `default()` est le repli si la box est plus ancienne que
+    ce SHA de recette (le catalogue et la box évoluent séparément). -#}
 http:
   routers:
     nextcloud-{{ capsule_id }}:
-      rule: "Host(`nextcloud.{{ racine_slug }}.homegalaxy.io`)"
+      rule: "Host(`{{ nextcloud_host | default('nextcloud.' ~ racine_slug ~ '.homegalaxy.io') }}`){{ ' || Host(`' ~ nextcloud_host_alias ~ '`)' if nextcloud_host_alias is defined and nextcloud_host_alias else '' }}"
       entryPoints:
         - websecure
       service: nextcloud-{{ capsule_id }}-svc
