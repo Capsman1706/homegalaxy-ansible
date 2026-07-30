@@ -42,12 +42,22 @@
       ghcr.io/home-assistant/home-assistant:stable
   changed_when: true
 
-- name: Attendre que Home Assistant soit disponible
-  ansible.builtin.wait_for:
-    host: "127.0.0.1"
-    port: "{{ homeassistant_port }}"
-    timeout: 120
-    delay: 10
+# Story 9.4.5c AC4 : le port hôte n'existe plus — readiness par docker
+# inspect (pattern jellyfin), jamais par wait_for sur 127.0.0.1.
+- name: Attendre que Home Assistant soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} homeassistant-{{ capsule_id }}
+  register: homeassistant_state
+  until: (homeassistant_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 24
+  delay: 5
+  changed_when: false
+
+- name: Vérifier que Home Assistant est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container homeassistant-{{ capsule_id }} en état '{{ homeassistant_state.stdout | trim }}' (attendu : running)"
+  when: (homeassistant_state.stdout | trim) != "running"
 
 - name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
   ansible.builtin.command:
