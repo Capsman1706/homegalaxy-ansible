@@ -8,9 +8,16 @@ http:
       tls:
         certResolver: cloudflare
       middlewares:
+        # Story 9.4.5c AC1 — ORDRE STRICT : headers → authentification
+        # (Authelia pose Remote-User) → autorisation (HG /internal/authz lit
+        # Remote-User et décide sur PERMISSION). Fail-closed : forwardAuth
+        # injoignable = refus (comportement Traefik, aucune option de
+        # contournement configurée).
         - secure-headers
+        - authelia
+        - hg-authz
   services:
     dynmap-{{ capsule_id }}-svc:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:{{ dynmap_port }}"
+          - url: "http://minecraft-{{ capsule_id }}:8123"

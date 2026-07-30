@@ -9,4 +9,4 @@ tcp:
     minecraft-{{ capsule_id }}-svc:
       loadBalancer:
         servers:
-          - address: "host.docker.internal:{{ minecraft_port }}"
+          - address: "minecraft-{{ capsule_id }}:25565"

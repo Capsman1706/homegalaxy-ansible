@@ -22,9 +22,16 @@ http:
           - main: "{{ service_wildcard_domain }}"
 {% endif %}
       middlewares:
+        # Story 9.4.5c AC1 — ORDRE STRICT : headers → authentification
+        # (Authelia pose Remote-User) → autorisation (HG /internal/authz lit
+        # Remote-User et décide sur PERMISSION). Fail-closed : forwardAuth
+        # injoignable = refus (comportement Traefik, aucune option de
+        # contournement configurée).
         - secure-headers
+        - authelia
+        - hg-authz
   services:
     homeassistant-{{ capsule_id }}-svc:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:{{ homeassistant_port }}"
+          - url: "http://homeassistant-{{ capsule_id }}:8123"

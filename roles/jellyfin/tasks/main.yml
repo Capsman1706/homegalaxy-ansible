@@ -17,6 +17,15 @@
     - cache
     - media
 
+- name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: docker network create capsule_{{ capsule_id }}
+  register: capsule_network_create
+  failed_when:
+    - capsule_network_create.rc != 0
+    - "'already exists' not in capsule_network_create.stderr"
+  changed_when: capsule_network_create.rc == 0
+
 - name: Pull image Jellyfin (arm64 validée spike 2026-07-20)
   ansible.builtin.command:
     cmd: docker pull jellyfin/jellyfin:latest
@@ -34,7 +43,7 @@
       docker run -d
       --name jellyfin-{{ capsule_id }}
       --restart unless-stopped
-      -p {{ jellyfin_port }}:8096
+      --network capsule_{{ capsule_id }}
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/config:/config
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/cache:/cache
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/media:/media
@@ -57,6 +66,17 @@
   ansible.builtin.fail:
     msg: "Container jellyfin-{{ capsule_id }} en état '{{ jellyfin_state.stdout | trim }}' (attendu : running)"
   when: (jellyfin_state.stdout | trim) != "running"
+
+- name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: >-
+      docker network connect capsule_{{ capsule_id }}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_network_attach
+  failed_when:
+    - traefik_network_attach.rc != 0
+    - "'already exists' not in traefik_network_attach.stderr"
+  changed_when: traefik_network_attach.rc == 0
 
 - name: Écrire la route Traefik pour jellyfin.{{ racine_slug }}.homegalaxy.io
   ansible.builtin.template:

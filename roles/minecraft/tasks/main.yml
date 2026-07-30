@@ -10,6 +10,15 @@
     state: directory
     mode: "0755"
 
+- name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: docker network create capsule_{{ capsule_id }}
+  register: capsule_network_create
+  failed_when:
+    - capsule_network_create.rc != 0
+    - "'already exists' not in capsule_network_create.stderr"
+  changed_when: capsule_network_create.rc == 0
+
 - name: Pull image Minecraft Server
   ansible.builtin.command:
     cmd: docker pull itzg/minecraft-server:latest
@@ -27,8 +36,7 @@
       docker run -d
       --name minecraft-{{ capsule_id }}
       --restart unless-stopped
-      -p {{ minecraft_port }}:25565
-      -p {{ dynmap_port }}:8123
+      --network capsule_{{ capsule_id }}
       -e EULA=TRUE
       -e TYPE=PAPER
       -e VERSION=LATEST
@@ -44,6 +52,17 @@
     port: "{{ minecraft_port }}"
     timeout: 180
     delay: 15
+
+- name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: >-
+      docker network connect capsule_{{ capsule_id }}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_network_attach
+  failed_when:
+    - traefik_network_attach.rc != 0
+    - "'already exists' not in traefik_network_attach.stderr"
+  changed_when: traefik_network_attach.rc == 0
 
 - name: Écrire la route Traefik HTTP pour dynmap.{{ racine_slug }}.homegalaxy.io
   ansible.builtin.template:

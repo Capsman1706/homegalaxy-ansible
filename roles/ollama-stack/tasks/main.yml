@@ -22,6 +22,15 @@
     state: directory
     mode: "0755"
 
+- name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: docker network create capsule_{{ capsule_id }}
+  register: capsule_network_create
+  failed_when:
+    - capsule_network_create.rc != 0
+    - "'already exists' not in capsule_network_create.stderr"
+  changed_when: capsule_network_create.rc == 0
+
 - name: Pull image Ollama
   ansible.builtin.command:
     cmd: docker pull ollama/ollama:latest
@@ -39,7 +48,7 @@
       docker run -d
       --name ollama-{{ capsule_id }}
       --restart unless-stopped
-      -p {{ ollama_port }}:11434
+      --network capsule_{{ capsule_id }}
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/ollama:/root/.ollama
       ollama/ollama:latest
   changed_when: true
@@ -88,10 +97,9 @@
       docker run -d
       --name openwebui-{{ capsule_id }}
       --restart unless-stopped
-      -p {{ openwebui_port }}:8080
-      -e OLLAMA_BASE_URL=http://host.docker.internal:{{ ollama_port }}
+      --network capsule_{{ capsule_id }}
+      -e OLLAMA_BASE_URL=http://ollama-{{ capsule_id }}:11434
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/openwebui:/app/backend/data
-      --add-host host.docker.internal:host-gateway
       ghcr.io/open-webui/open-webui:main
   changed_when: true
 
@@ -109,6 +117,17 @@
   ansible.builtin.fail:
     msg: "Container openwebui-{{ capsule_id }} en état '{{ openwebui_state.stdout | trim }}' (attendu : running)"
   when: (openwebui_state.stdout | trim) != "running"
+
+- name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: >-
+      docker network connect capsule_{{ capsule_id }}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_network_attach
+  failed_when:
+    - traefik_network_attach.rc != 0
+    - "'already exists' not in traefik_network_attach.stderr"
+  changed_when: traefik_network_attach.rc == 0
 
 - name: Écrire la route Traefik pour openwebui.{{ racine_slug }}.homegalaxy.io
   ansible.builtin.template:

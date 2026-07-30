@@ -19,6 +19,15 @@
     state: directory
     mode: "0755"
 
+- name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: docker network create capsule_{{ capsule_id }}
+  register: capsule_network_create
+  failed_when:
+    - capsule_network_create.rc != 0
+    - "'already exists' not in capsule_network_create.stderr"
+  changed_when: capsule_network_create.rc == 0
+
 - name: Pull image Nextcloud (arm64 validée spike 2026-07-20)
   ansible.builtin.command:
     cmd: docker pull nextcloud:latest
@@ -44,7 +53,7 @@
       docker run -d
       --name nextcloud-{{ capsule_id }}
       --restart unless-stopped
-      -p {{ nextcloud_port }}:80
+      --network capsule_{{ capsule_id }}
       -e OVERWRITEPROTOCOL=https
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/nextcloud:/var/www/html
       nextcloud:latest
@@ -66,6 +75,17 @@
   ansible.builtin.fail:
     msg: "Container nextcloud-{{ capsule_id }} en état '{{ nextcloud_state.stdout | trim }}' (attendu : running)"
   when: (nextcloud_state.stdout | trim) != "running"
+
+- name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: >-
+      docker network connect capsule_{{ capsule_id }}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_network_attach
+  failed_when:
+    - traefik_network_attach.rc != 0
+    - "'already exists' not in traefik_network_attach.stderr"
+  changed_when: traefik_network_attach.rc == 0
 
 - name: Écrire la route Traefik pour nextcloud.{{ racine_slug }}.homegalaxy.io
   ansible.builtin.template:
