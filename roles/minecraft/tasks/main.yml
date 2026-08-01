@@ -1,8 +1,27 @@
 ---
-# Rôle : minecraft — Serveur Minecraft Java + Dynmap
-# AC#6, AC#8 — Story 9-1
-# Déploie itzg/minecraft-server avec Dynmap plugin
-# Expose port TCP 25565 (client Java) via Traefik + port HTTP Dynmap
+# Rôle : minecraft — Serveur Minecraft Java (Paper) + Dynmap
+# AC#6, AC#8 — Story 9-1 · post-review 9.4.5c (H3/H4/M3/L6/L8)
+#
+# Deux surfaces, deux régimes DIFFÉRENTS :
+#
+#  - Dynmap (HTTP 8123) : AUCUN port hôte. Le container rejoint le réseau
+#    `capsule_{{ capsule_id }}`, Traefik l'y adresse par NOM de container et la
+#    route porte la chaîne complète secure-headers → authelia → hg-authz.
+#
+#  - Port JEU (TCP 25565) : SEUL port hôte restant de tout le marketplace, et
+#    c'est délibéré (review M3). Un client Minecraft Java n'ouvre pas de session
+#    TLS, donc n'émet aucun SNI : un router TCP Traefik ne peut discriminer NI
+#    par SNI (`HostSNI(*)` matche tout) NI par Host (pas d'HTTP). Sur un
+#    entrypoint TCP partagé, deux capsules ayant Minecraft se marchent dessus en
+#    silence — les joueurs de B atterrissent sur le monde de A. L'isolation
+#    inter-capsules passe donc par un port hôte DISTINCT par capsule
+#    (`minecraft_port`), qui est aussi le comportement d'avant 9.4.5c.
+#    Aucun forwardAuth n'est possible sur du TCP brut : la protection du port
+#    jeu reste le périmètre tailnet (exception documentée de la story).
+#
+# Extravars : capsule_id, racine_slug (requis) · minecraft_port (port hôte du
+# port jeu ; défaut 25565 = fallback single-instance du worker). `dynmap_port`
+# n'est PLUS consommé (Dynmap n'a plus de port hôte).
 
 - name: Créer le répertoire de données Minecraft
   ansible.builtin.file:
@@ -10,26 +29,67 @@
     state: directory
     mode: "0755"
 
+# Idempotence (Story 9.4.5c AC4, durcie review L6) : on teste la PRÉSENCE du
+# réseau au lieu de chercher « already exists » dans la stderr Docker — ce
+# wording anglais n'est pas un contrat, et le filtrer masquait tous les autres
+# échecs (dockerd injoignable, quota d'adresses, …) derrière un rc != 0 muet.
+- name: "Vérifier si le réseau Docker de la capsule existe déjà"
+  ansible.builtin.command:
+    cmd: >-
+      docker network ls --filter name=^capsule_{{ capsule_id }}$
+      --format {% raw %}{{.Name}}{% endraw %}
+  register: capsule_network_ls
+  changed_when: false
+
 - name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
   ansible.builtin.command:
     cmd: docker network create capsule_{{ capsule_id }}
-  register: capsule_network_create
-  failed_when:
-    - capsule_network_create.rc != 0
-    - "'already exists' not in capsule_network_create.stderr"
-  changed_when: capsule_network_create.rc == 0
+  when: (capsule_network_ls.stdout | trim) == ""
+  changed_when: true
+
+# Review M3 — le port jeu est le seul port hôte du marketplace : c'est lui qui
+# porte l'isolation inter-capsules. On détecte la collision AVANT le docker run
+# pour la rendre lisible, plutôt que de laisser un « Bind for 0.0.0.0:25565
+# failed: port is already allocated » enfoui dans la stderr de Docker.
+# `-a` (review 9.4.5c round 2, L-1) : un Minecraft ARRÊTÉ ne détient pas le port
+# à l'instant du check, mais il le RÉCLAMERA à son redémarrage. Sans `-a`,
+# l'install de la capsule B passait, et c'est la capsule A qui échouait plus
+# tard à redémarrer — une panne déportée sur la capsule innocente. La
+# vérification Traefik plus bas utilise déjà `-a` pour la raison symétrique.
+- name: "Relever les containers publiant déjà le port jeu {{ minecraft_port | default(25565) }}"
+  ansible.builtin.command:
+    cmd: >-
+      docker ps -a --filter publish={{ minecraft_port | default(25565) }}
+      --format {% raw %}{{.Names}}{% endraw %}
+  register: minecraft_port_holders
+  changed_when: false
+
+- name: "Échouer si une AUTRE capsule occupe déjà le port jeu"
+  ansible.builtin.fail:
+    msg: >-
+      Port jeu {{ minecraft_port | default(25565) }} déjà publié par
+      {{ minecraft_port_holders.stdout_lines | difference(['minecraft-' ~ capsule_id]) | join(', ') }}.
+      Le port jeu Minecraft est du TCP brut : Traefik ne sait pas discriminer
+      deux capsules dessus (un client Java n'envoie pas de SNI), l'isolation
+      repose donc sur un port hôte DISTINCT par capsule. Attribuer un
+      `minecraft_port` libre à cette capsule et relancer l'installation.
+  when: >-
+    (minecraft_port_holders.stdout_lines | difference(['minecraft-' ~ capsule_id]) | length) > 0
 
 - name: Pull image Minecraft Server
   ansible.builtin.command:
     cmd: docker pull itzg/minecraft-server:latest
   changed_when: true
 
-- name: Supprimer container Minecraft existant si présent
+- name: Supprimer container Minecraft existant si présent (idempotence ARCH-R5)
   ansible.builtin.command:
     cmd: docker rm -f minecraft-{{ capsule_id }}
-  ignore_errors: true
+  failed_when: false
   changed_when: true
 
+# `-p {{ minecraft_port }}:25565` = port JEU uniquement (cf. en-tête, review M3).
+# Dynmap (8123) reste SANS port hôte : il sort par Traefik via le réseau de
+# capsule, avec la chaîne d'authentification complète.
 - name: Démarrer container Minecraft Server avec Dynmap
   ansible.builtin.command:
     cmd: >
@@ -37,6 +97,7 @@
       --name minecraft-{{ capsule_id }}
       --restart unless-stopped
       --network capsule_{{ capsule_id }}
+      -p {{ minecraft_port | default(25565) }}:25565
       -e EULA=TRUE
       -e TYPE=PAPER
       -e VERSION=LATEST
@@ -46,8 +107,8 @@
       itzg/minecraft-server:latest
   changed_when: true
 
-# Story 9.4.5c AC4 : le port hôte n'existe plus — readiness par docker
-# inspect (pattern jellyfin). Le boot Minecraft est long : 36×5 s.
+# Story 9.4.5c AC4 : readiness par docker inspect, jamais par wait_for sur un
+# port (le worker n'est pas l'hôte). Le boot Minecraft est long : 36×5 s.
 - name: Attendre que le serveur Minecraft soit prêt (readiness docker inspect)
   ansible.builtin.command:
     cmd: >-
@@ -63,25 +124,59 @@
     msg: "Container minecraft-{{ capsule_id }} en état '{{ minecraft_state.stdout | trim }}' (attendu : running)"
   when: (minecraft_state.stdout | trim) != "running"
 
+# Review L6 — mode de panne non couvert jusqu'ici : sans Traefik sur CE dockerd,
+# Dynmap n'a plus AUCUN chemin réseau (les ports hôtes HTTP ont disparu en
+# 9.4.5c). On nomme la cause ici plutôt que d'échouer sur un « No such
+# container » brut au dernier tiers du rôle.
+- name: "Vérifier que le container Traefik existe sur ce dockerd"
+  ansible.builtin.command:
+    cmd: >-
+      docker container inspect -f {% raw %}{{.Id}}{% endraw %}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_container_check
+  failed_when: false
+  changed_when: false
+
+- name: "Échouer avec un message actionnable si Traefik est introuvable"
+  ansible.builtin.fail:
+    msg: >-
+      Container Traefik « {{ traefik_container_name | default('homebox-traefik') }} »
+      introuvable sur le dockerd de ce worker. Depuis la Story 9.4.5c les apps ne
+      publient plus de port hôte HTTP : Traefik DOIT tourner sur le même dockerd
+      et rejoindre « capsule_{{ capsule_id }} », sinon l'app installée reste
+      injoignable. Corriger l'extravar `traefik_container_name` ou démarrer
+      Traefik, puis relancer l'installation.
+  when: traefik_container_check.rc != 0
+
+# `docker ps -a --filter network=…` plutôt que `docker network inspect -f` :
+# `ansible.builtin.command` ne passe PAS par un shell, il découpe la commande
+# avec shlex — un go-template `{{range .Containers}}…` contient un espace et
+# serait éclaté en plusieurs arguments. `-a` inclut les containers arrêtés :
+# un Traefik stoppé est TOUJOURS attaché au réseau, le re-connecter échouerait.
+- name: "Vérifier si Traefik est déjà attaché au réseau de la capsule"
+  ansible.builtin.command:
+    cmd: >-
+      docker ps -a --filter network=capsule_{{ capsule_id }}
+      --format {% raw %}{{.Names}}{% endraw %}
+  register: capsule_network_members
+  changed_when: false
+
 - name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
   ansible.builtin.command:
     cmd: >-
       docker network connect capsule_{{ capsule_id }}
       {{ traefik_container_name | default('homebox-traefik') }}
-  register: traefik_network_attach
-  failed_when:
-    - traefik_network_attach.rc != 0
-    - "'already exists' not in traefik_network_attach.stderr"
-  changed_when: traefik_network_attach.rc == 0
+  when: >-
+    (traefik_container_name | default('homebox-traefik'))
+    not in capsule_network_members.stdout_lines
+  changed_when: true
 
-- name: Écrire la route Traefik HTTP pour dynmap.{{ racine_slug }}.homegalaxy.io
+# Review H4 — `{{ traefik_dynamic_dir }}` est le SEUL répertoire lu par Traefik
+# (mount du worker). L'ancien layout `/opt/homegalaxy/data/traefik/dynamic/...`
+# n'existe sur aucun worker : la task `template` y échouait, donc TOUTE install
+# de Minecraft partait en `failed` (précédent runtime 2026-07-14, ARCH-R6).
+- name: Écrire la route Traefik HTTP pour Dynmap
   ansible.builtin.template:
     src: traefik-route-http.yml.j2
-    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/dynmap-{{ capsule_id }}.yml"
-    mode: "0644"
-
-- name: Écrire la route Traefik TCP pour port 25565
-  ansible.builtin.template:
-    src: traefik-route-tcp.yml.j2
-    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/minecraft-tcp-{{ capsule_id }}.yml"
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-dynmap.yml"
     mode: "0644"

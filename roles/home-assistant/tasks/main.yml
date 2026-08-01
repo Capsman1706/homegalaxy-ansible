@@ -1,8 +1,19 @@
 ---
 # Rôle : home-assistant — Home Assistant Core
-# AC#5, AC#8 — Story 9-1
-# Déploie Home Assistant en container Docker sur le host
-# et écrit la route Traefik pour homeassistant.{slug}.homegalaxy.io
+# AC#5, AC#8 — Story 9-1 · post-9.4.5c (H4/L6/L8)
+#
+# Post-9.4.5c : AUCUN port hôte publié. Home Assistant écoute sur son port
+# INTERNE 8123 ; le container rejoint `capsule_{{ capsule_id }}` et Traefik,
+# attaché au même réseau, l'adresse par NOM de container
+# (`homeassistant-{{ capsule_id }}:8123`). La route porte la chaîne complète
+# secure-headers → authelia → hg-authz, donc l'app n'est atteignable que par
+# Traefik, jamais en direct.
+#
+# Readiness par `docker inspect` (jamais `wait_for` sur 127.0.0.1 : le worker
+# n'est pas l'hôte) · idempotence ARCH-R5 : `rm -f` avant `run` · route écrite
+# dans `{{ traefik_dynamic_dir }}`, SEUL répertoire lu par Traefik.
+# Extravars requis : capsule_id, racine_slug. `homeassistant_port` n'est plus
+# consommé (plus rien à publier).
 
 - name: Créer le répertoire de configuration Home Assistant
   ansible.builtin.file:
@@ -10,14 +21,23 @@
     state: directory
     mode: "0755"
 
+# Idempotence (Story 9.4.5c AC4, durcie review L6) : on teste la PRÉSENCE du
+# réseau au lieu de chercher « already exists » dans la stderr Docker — ce
+# wording anglais n'est pas un contrat, et le filtrer masquait tous les autres
+# échecs (dockerd injoignable, quota d'adresses, …) derrière un rc != 0 muet.
+- name: "Vérifier si le réseau Docker de la capsule existe déjà"
+  ansible.builtin.command:
+    cmd: >-
+      docker network ls --filter name=^capsule_{{ capsule_id }}$
+      --format {% raw %}{{.Name}}{% endraw %}
+  register: capsule_network_ls
+  changed_when: false
+
 - name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
   ansible.builtin.command:
     cmd: docker network create capsule_{{ capsule_id }}
-  register: capsule_network_create
-  failed_when:
-    - capsule_network_create.rc != 0
-    - "'already exists' not in capsule_network_create.stderr"
-  changed_when: capsule_network_create.rc == 0
+  when: (capsule_network_ls.stdout | trim) == ""
+  changed_when: true
 
 - name: Pull image Home Assistant
   ansible.builtin.command:
@@ -59,19 +79,59 @@
     msg: "Container homeassistant-{{ capsule_id }} en état '{{ homeassistant_state.stdout | trim }}' (attendu : running)"
   when: (homeassistant_state.stdout | trim) != "running"
 
+# Review L6 — mode de panne non couvert jusqu'ici : sans Traefik sur CE dockerd,
+# l'app n'a plus AUCUN chemin réseau (les ports hôtes ont disparu en 9.4.5c).
+# On nomme la cause ici plutôt que d'échouer sur un « No such container » brut
+# au dernier tiers du rôle, une fois le container déjà démarré.
+- name: "Vérifier que le container Traefik existe sur ce dockerd"
+  ansible.builtin.command:
+    cmd: >-
+      docker container inspect -f {% raw %}{{.Id}}{% endraw %}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_container_check
+  failed_when: false
+  changed_when: false
+
+- name: "Échouer avec un message actionnable si Traefik est introuvable"
+  ansible.builtin.fail:
+    msg: >-
+      Container Traefik « {{ traefik_container_name | default('homebox-traefik') }} »
+      introuvable sur le dockerd de ce worker. Depuis la Story 9.4.5c les apps ne
+      publient plus de port hôte : Traefik DOIT tourner sur le même dockerd et
+      rejoindre « capsule_{{ capsule_id }} », sinon l'app installée reste
+      injoignable. Corriger l'extravar `traefik_container_name` ou démarrer
+      Traefik, puis relancer l'installation.
+  when: traefik_container_check.rc != 0
+
+# `docker ps -a --filter network=…` plutôt que `docker network inspect -f` :
+# `ansible.builtin.command` ne passe PAS par un shell, il découpe la commande
+# avec shlex — un go-template `{{range .Containers}}…` contient un espace et
+# serait éclaté en plusieurs arguments. `-a` inclut les containers arrêtés :
+# un Traefik stoppé est TOUJOURS attaché au réseau, le re-connecter échouerait.
+- name: "Vérifier si Traefik est déjà attaché au réseau de la capsule"
+  ansible.builtin.command:
+    cmd: >-
+      docker ps -a --filter network=capsule_{{ capsule_id }}
+      --format {% raw %}{{.Names}}{% endraw %}
+  register: capsule_network_members
+  changed_when: false
+
 - name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
   ansible.builtin.command:
     cmd: >-
       docker network connect capsule_{{ capsule_id }}
       {{ traefik_container_name | default('homebox-traefik') }}
-  register: traefik_network_attach
-  failed_when:
-    - traefik_network_attach.rc != 0
-    - "'already exists' not in traefik_network_attach.stderr"
-  changed_when: traefik_network_attach.rc == 0
+  when: >-
+    (traefik_container_name | default('homebox-traefik'))
+    not in capsule_network_members.stdout_lines
+  changed_when: true
 
+# Review H4 — `{{ traefik_dynamic_dir }}` est le SEUL répertoire lu par Traefik
+# (mount du worker). L'ancien layout `/opt/homegalaxy/data/traefik/dynamic/...`
+# n'existe sur aucun worker : la task `template` y échouait, donc TOUTE install
+# de Home Assistant partait en `failed` (précédent runtime 2026-07-14, ARCH-R6).
 - name: Écrire la route Traefik pour homeassistant.{{ racine_slug }}.homegalaxy.io
   ansible.builtin.template:
     src: traefik-route.yml.j2
-    dest: "/opt/homegalaxy/data/traefik/dynamic/capsules/homeassistant-{{ capsule_id }}.yml"
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-homeassistant.yml"
     mode: "0644"
