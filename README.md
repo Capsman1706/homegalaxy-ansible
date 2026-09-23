@@ -12,6 +12,7 @@ roles/
   adguard/          → containers : adguard
   home-assistant/   → containers : homeassistant
   jellyfin/         → containers : jellyfin
+  memos/            → containers : memos        (Story 9.5.11d — image épinglée tag + digest)
   minecraft/        → containers : minecraft    (slug catalogue : minecraft-server)
   nextcloud/        → containers : nextcloud
   ollama-stack/     → containers : ollama, openwebui  (slug catalogue : ollama-webui)

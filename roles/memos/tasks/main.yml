@@ -1,0 +1,173 @@
+---
+# Rôle : memos — prise de notes Memos (Story 9.5.11d, 1er rôle du 1er lot Galaxy Store)
+# Patron jellyfin (docker CLI + template route Traefik), UNE différence voulue :
+# l'image est ÉPINGLÉE tag + digest d'index (ARCH-R5 — `:latest` + `docker pull`
+# + réinstall = montée de version silencieuse ; l'API Memos 0.2x/0.3x casse
+# d'une mineure à l'autre).
+#
+# F2 DÉCLARATIVE (Q2 = B, Gary 2026-09-23) : l'inscription publique est fermée
+# et l'accès anonyme refusé par deux FICHIERS de réglage montés en lecture
+# seule sur /etc/secrets, écrits AVANT le `docker run`. Mesuré sur 0.31.0 :
+#   - Memos les charge au démarrage (`loaded deployment configuration …
+#     instanceSettings=2`), ils ÉCRASENT la base et l'API refuse de les modifier
+#     (`PATCH …/GENERAL` → 400 « configured by the deployment ») ;
+#   - la création du 1er compte (ADMIN) reste possible malgré l'inscription
+#     fermée — c'est le writer de la box (`admin_bootstrap`) qui le crée ;
+#   - un fichier mal formé fait REFUSER le démarrage (exit 1) : le readiness
+#     ci-dessous échoue, l'install est `failed`, jamais une instance ouverte.
+# Les fichiers sont LITTÉRAUX (`files/`, aucun templating) : aucune valeur
+# venant d'un humain ne peut s'y glisser (extravars JSON templatées, 9.5.11 AC0.3).
+#
+# Aucun port hôte publié : Traefik, attaché à `capsule_{{ capsule_id }}`,
+# adresse `memos-{{ capsule_id }}:5230` par nom. Aucun secret en argv.
+# `MEMOS_MODE` n'est PAS posé : variable supprimée en v0.26 (config morte).
+# Extravars requis : capsule_id, racine_slug ; `memos_host` (calculé par la box).
+
+# Le dossier de données est créé SANS `mode` : l'entrypoint Memos fait
+# `chown -R 10001:10001 /var/opt/memos` (mesuré : dossier 2755 10001:10001).
+# Un `mode: "0755"` au rejeu tenterait un chmod sur un dossier dont le worker
+# (UID 999) n'est plus propriétaire ⇒ EPERM ⇒ réinstall en échec.
+- name: Créer le répertoire de données Memos pour la capsule
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/memos/data"
+    state: directory
+
+- name: Créer le répertoire des réglages déclaratifs Memos
+  ansible.builtin.file:
+    path: "/opt/homegalaxy/capsules/{{ capsule_id }}/memos/settings"
+    state: directory
+    mode: "0755"
+
+# ⛔ AVANT le `docker run` (R3) : l'inscription est fermée dès le 1er démarrage,
+# aucune fenêtre où un signup anonyme serait possible. Réécrits à chaque run :
+# idempotent par construction ; un changement n'est pris qu'au redémarrage, que
+# le `rm -f` + `run` ci-dessous garantit.
+- name: Écrire les réglages déclaratifs Memos (F2 + accès PRIVATE)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/opt/homegalaxy/capsules/{{ capsule_id }}/memos/settings/{{ item }}"
+    mode: "0644"
+  loop:
+    - memos-instance-setting-general.json
+    - memos-instance-setting-access.json
+
+- name: "Vérifier si le réseau Docker de la capsule existe déjà"
+  ansible.builtin.command:
+    cmd: >-
+      docker network ls --filter name=^capsule_{{ capsule_id }}$
+      --format {% raw %}{{.Name}}{% endraw %}
+  register: capsule_network_ls
+  changed_when: false
+
+- name: "Créer le réseau Docker de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: docker network create capsule_{{ capsule_id }}
+  when: (capsule_network_ls.stdout | trim) == ""
+  changed_when: true
+
+- name: Pull image Memos épinglée (0.31.0, index multi-arch amd64/arm64 mesuré)
+  ansible.builtin.command:
+    cmd: docker pull neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
+  changed_when: true
+
+- name: Supprimer container Memos existant si présent (idempotence ARCH-R5)
+  ansible.builtin.command:
+    cmd: docker rm -f memos-{{ capsule_id }}
+  failed_when: false
+  changed_when: true
+
+- name: Démarrer container Memos
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name memos-{{ capsule_id }}
+      --restart unless-stopped
+      --network capsule_{{ capsule_id }}
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/memos/data:/var/opt/memos
+      -v /opt/homegalaxy/capsules/{{ capsule_id }}/memos/settings:/etc/secrets:ro
+      -e MEMOS_DRIVER=sqlite
+      -e MEMOS_PORT=5230
+      -e MEMOS_INSTANCE_URL=https://{{ memos_host | default('memos.' ~ racine_slug ~ '.homegalaxy.io') }}
+      neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
+  changed_when: true
+
+- name: Attendre que Memos soit prêt (readiness docker inspect)
+  ansible.builtin.command:
+    cmd: >-
+      docker inspect -f {% raw %}{{.State.Status}}{% endraw %} memos-{{ capsule_id }}
+  register: memos_state
+  until: (memos_state.stdout | trim) in ["running", "exited", "dead"]
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Vérifier que Memos est running (fast-fail si crash)
+  ansible.builtin.fail:
+    msg: "Container memos-{{ capsule_id }} en état '{{ memos_state.stdout | trim }}' (attendu : running)"
+  when: (memos_state.stdout | trim) != "running"
+
+# `running` ne prouve pas que les réglages ont été lus : un fichier illisible
+# fait sortir Memos APRÈS le démarrage du processus. La ligne de chargement
+# (mesurée) nomme le nombre de réglages effectivement appliqués.
+- name: Attendre le chargement des réglages déclaratifs (F2)
+  ansible.builtin.command:
+    cmd: docker logs memos-{{ capsule_id }}
+  register: memos_logs
+  until: >-
+    'instanceSettings=2' in (memos_logs.stdout ~ memos_logs.stderr)
+    or 'memos failed' in (memos_logs.stdout ~ memos_logs.stderr)
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Vérifier que les 2 réglages déclaratifs sont appliqués (fast-fail)
+  ansible.builtin.fail:
+    msg: >-
+      Memos memos-{{ capsule_id }} n'a pas appliqué ses réglages déclaratifs
+      (inscription fermée + accès privé) — installation refusée plutôt qu'une
+      instance ouverte. Voir `docker logs memos-{{ capsule_id }}`.
+  when: "'instanceSettings=2' not in (memos_logs.stdout ~ memos_logs.stderr)"
+
+- name: "Vérifier que le container Traefik existe sur ce dockerd"
+  ansible.builtin.command:
+    cmd: >-
+      docker container inspect -f {% raw %}{{.Id}}{% endraw %}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  register: traefik_container_check
+  failed_when: false
+  changed_when: false
+
+- name: "Échouer avec un message actionnable si Traefik est introuvable"
+  ansible.builtin.fail:
+    msg: >-
+      Container Traefik « {{ traefik_container_name | default('homebox-traefik') }} »
+      introuvable sur le dockerd de ce worker. Depuis la Story 9.4.5c les apps ne
+      publient plus de port hôte : Traefik DOIT tourner sur le même dockerd et
+      rejoindre « capsule_{{ capsule_id }} », sinon l'app installée reste
+      injoignable. Corriger l'extravar `traefik_container_name` ou démarrer
+      Traefik, puis relancer l'installation.
+  when: traefik_container_check.rc != 0
+
+- name: "Vérifier si Traefik est déjà attaché au réseau de la capsule"
+  ansible.builtin.command:
+    cmd: >-
+      docker ps -a --filter network=capsule_{{ capsule_id }}
+      --format {% raw %}{{.Names}}{% endraw %}
+  register: capsule_network_members
+  changed_when: false
+
+- name: "Attacher Traefik au réseau de la capsule (Story 9.4.5c AC4 — idempotent)"
+  ansible.builtin.command:
+    cmd: >-
+      docker network connect capsule_{{ capsule_id }}
+      {{ traefik_container_name | default('homebox-traefik') }}
+  when: >-
+    (traefik_container_name | default('homebox-traefik'))
+    not in capsule_network_members.stdout_lines
+  changed_when: true
+
+- name: Écrire la route Traefik pour memos.{{ racine_slug }}.homegalaxy.io
+  ansible.builtin.template:
+    src: traefik-route.yml.j2
+    dest: "{{ traefik_dynamic_dir | default('/etc/traefik/dynamic') }}/capsule-{{ capsule_id }}-memos.yml"
+    mode: "0644"

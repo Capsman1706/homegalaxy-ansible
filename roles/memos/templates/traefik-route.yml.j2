@@ -1,0 +1,37 @@
+{#- Hostnames calculés par la BOX (party 2026-07-29) — la politique de
+    nommage ne vit PLUS ici : `{sub}_host` = canonique
+    `{sub}-{capsule_slug}.{racine}.homegalaxy.io` (unique par capsule),
+    `{sub}_host_alias` = alias court, servi uniquement pour la capsule
+    générale. Le `default()` est le repli si la box est plus ancienne que
+    ce SHA de recette (le catalogue et la box évoluent séparément). -#}
+http:
+  routers:
+    memos-{{ capsule_id }}:
+      rule: "Host(`{{ memos_host | default('memos.' ~ racine_slug ~ '.homegalaxy.io') }}`){{ ' || Host(`' ~ memos_host_alias ~ '`)' if memos_host_alias is defined and memos_host_alias else '' }}"
+      entryPoints:
+        - websecure
+      service: memos-{{ capsule_id }}-svc
+      tls:
+        certResolver: cloudflare
+{% if service_wildcard_domain is defined and service_wildcard_domain %}
+        # Lot C story 9.2.6 : un SEUL certificat par box. Sans ce `domains`,
+        # Traefik demande un certificat PAR hostname (limite LE ~50/semaine sur
+        # le domaine enregistre, partage par toute la flotte). Absent => ancien
+        # comportement per-host, la route reste valide.
+        domains:
+          - main: "{{ service_wildcard_domain }}"
+{% endif %}
+      middlewares:
+        # Story 9.4.5c AC1 — ORDRE STRICT : headers → authentification
+        # (Authelia pose Remote-User) → autorisation (HG /internal/authz lit
+        # Remote-User et décide sur PERMISSION). Fail-closed : forwardAuth
+        # injoignable = refus (comportement Traefik, aucune option de
+        # contournement configurée).
+        - secure-headers
+        - authelia
+        - hg-authz
+  services:
+    memos-{{ capsule_id }}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://memos-{{ capsule_id }}:5230"
