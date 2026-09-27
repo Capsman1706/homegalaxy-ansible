@@ -1,5 +1,8 @@
 ---
 # Rôle : adguard — AdGuard Home DNS + filtrage pub
+# Image ÉPINGLÉE tag + digest d'index (quick-fix party 2026-09-27, patron memos) :
+# 9.4.5b-8 lit l'empreinte bcrypt de `AdGuardHome.yaml` — un lecteur épinglé
+# sur une app en `:latest` changerait de format sans prévenir.
 # Story 9-1 (AC#4, AC#8) · fixes runtime Story 9.4.1 AC3 :
 #   - wait_for 127.0.0.1 supprimé → readiness docker inspect (le worker n'est
 #     pas le host : les ports publiés n'y sont pas joignables)
@@ -46,9 +49,9 @@
   when: (capsule_network_ls.stdout | trim) == ""
   changed_when: true
 
-- name: Pull image AdGuard Home
+- name: Pull image AdGuard Home épinglée (v0.107.78, index multi-arch — digest mesuré Oracle 2026-09-27 = image en service)
   ansible.builtin.command:
-    cmd: docker pull adguard/adguardhome:latest
+    cmd: docker pull adguard/adguardhome:v0.107.78@sha256:1ea34eafe5dc691007946e8eaab7bf46b0de9412f39213d8c06e48b53bf9a6c5
   changed_when: true
 
 - name: Supprimer container AdGuard existant si présent (idempotence ARCH-R5)
@@ -66,7 +69,7 @@
       --network capsule_{{ capsule_id }}
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/adguard/work:/opt/adguardhome/work
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/adguard/conf:/opt/adguardhome/conf
-      adguard/adguardhome:latest
+      adguard/adguardhome:v0.107.78@sha256:1ea34eafe5dc691007946e8eaab7bf46b0de9412f39213d8c06e48b53bf9a6c5
   changed_when: true
 
 # Readiness (review 9.4.1) : State.Status distingue « démarre » de « crashé » —

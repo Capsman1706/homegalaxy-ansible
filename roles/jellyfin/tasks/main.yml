@@ -1,6 +1,10 @@
 ---
 # Rôle : jellyfin — serveur média Jellyfin
 # Story 9.4.1 AC3 — pattern adguard (docker run + template route Traefik).
+# Image ÉPINGLÉE tag + digest d'index (quick-fix party 2026-09-27, patron memos) :
+# `:latest` + `docker pull` à chaque exécution = la prochaine réinstall passait
+# en Jellyfin 12.x (migration DB SANS retour arrière, auth legacy `?api_key=`
+# désactivée ⇒ porte compagnon cassée). La montée 12.1 = story 9.4.5b-8a.
 # Findings runtime 9.3 intégrés d'origine :
 #   - readiness via docker inspect (jamais de wait_for 127.0.0.1 dans le worker)
 #   - route écrite dans {{ traefik_dynamic_dir }} (mount worker /etc/traefik/dynamic)
@@ -43,9 +47,9 @@
   when: (capsule_network_ls.stdout | trim) == ""
   changed_when: true
 
-- name: Pull image Jellyfin (arm64 validée spike 2026-07-20)
+- name: Pull image Jellyfin épinglée (10.11.11, index multi-arch — digest mesuré Oracle 2026-09-27 = image en service)
   ansible.builtin.command:
-    cmd: docker pull jellyfin/jellyfin:latest
+    cmd: docker pull jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
   changed_when: true
 
 - name: Supprimer container Jellyfin existant si présent (idempotence ARCH-R5)
@@ -64,7 +68,7 @@
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/config:/config
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/cache:/cache
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/media:/media
-      jellyfin/jellyfin:latest
+      jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
   changed_when: true
 
 # Readiness (review 9.4.1) : State.Status distingue « démarre » de « crashé » —
