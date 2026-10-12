@@ -23,6 +23,14 @@
 # Traefik, jamais en direct.
 # Extravars requis : capsule_id, racine_slug. `jellyfin_port` n'est plus consommé
 # (plus rien à publier) — l'allocateur peut continuer à l'attribuer, sans effet.
+#
+# Story 9.6.7 (D6) — Jellyfin ne POSSÈDE plus de dossier média : il LIT l'espace
+# Fichiers de la capsule (`/opt/homegalaxy/files/<id>/{Vidéos,Photos,Musique}`)
+# en lecture seule. Les montages sont calculés par la BOX et arrivent dans
+# l'extravar JSON `hg_files` (`{"jellyfin": [{host, container, ro}]}`) — le rôle
+# n'écrit aucun chemin hôte de média lui-même. `hg_files` absent (box d'avant
+# 9.6.7, ou espace Fichiers non confirmé par le moteur) ⇒ Jellyfin démarre sans
+# média, jamais sur un dossier fabriqué par `docker run -v`.
 
 - name: Créer le répertoire de données Jellyfin pour la capsule
   ansible.builtin.file:
@@ -32,7 +40,18 @@
   loop:
     - config
     - cache
-    - media
+
+- name: "Montages de l'espace Fichiers (Story 9.6.7 — calculés par la box)"
+  ansible.builtin.set_fact:
+    jellyfin_files_args: []
+
+- name: "Ajouter chaque dossier Fichiers déclaré au manifeste (`:ro` si lecture)"
+  ansible.builtin.set_fact:
+    jellyfin_files_args: >-
+      {{ jellyfin_files_args + ['-v', item.host ~ ':' ~ item.container ~ (':ro' if (item.ro | bool) else '')] }}
+  loop: "{{ (hg_files | default({})).get('jellyfin', []) }}"
+  loop_control:
+    label: "{{ item.container }}"
 
 # Idempotence (Story 9.4.5c AC4, durcie review L6) : on teste la PRÉSENCE du
 # réseau au lieu de chercher « already exists » dans la stderr Docker — ce
@@ -63,6 +82,8 @@
   failed_when: false
   changed_when: true
 
+# Montages Fichiers : chaque argument passe par `quote` (shlex) — les chemins
+# viennent d'une extravar (calculée par la box, mais jamais interprétée ici).
 - name: Démarrer container Jellyfin
   ansible.builtin.command:
     cmd: >
@@ -72,7 +93,7 @@
       --network capsule_{{ capsule_id }}
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/config:/config
       -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/cache:/cache
-      -v /opt/homegalaxy/capsules/{{ capsule_id }}/jellyfin/media:/media
+      {{ jellyfin_files_args | map('quote') | join(' ') }}
       jellyfin/jellyfin:12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
   changed_when: true
 
