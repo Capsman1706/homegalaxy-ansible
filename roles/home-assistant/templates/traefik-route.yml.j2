@@ -12,14 +12,24 @@ http:
         - websecure
       service: homeassistant-{{ capsule_id }}-svc
       tls:
-        certResolver: cloudflare
+        # Story 9.5.6t : `hgcore` = certificat de la box obtenu PAR LE CORE (sans
+        # la cle Cloudflare de la box). Box plus ancienne (variable absente) =>
+        # `cloudflare`, comportement d'avant, la route reste valide (ARCH-R2).
+        certResolver: {{ service_cert_resolver | default('cloudflare') }}
 {% if service_wildcard_domain is defined and service_wildcard_domain %}
         # Lot C story 9.2.6 : un SEUL certificat par box. Sans ce `domains`,
         # Traefik demande un certificat PAR hostname (limite LE ~50/semaine sur
         # le domaine enregistre, partage par toute la flotte). Absent => ancien
         # comportement per-host, la route reste valide.
         domains:
+{% if service_cert_main is defined and service_cert_main %}
+          # Story 9.5.6t (Q1) : l'apex de la box ET son joker, un certificat.
+          - main: "{{ service_cert_main }}"
+            sans:
+              - "{{ service_wildcard_domain }}"
+{% else %}
           - main: "{{ service_wildcard_domain }}"
+{% endif %}
 {% endif %}
       middlewares:
         # Story 9.4.5c AC1 — ORDRE STRICT : headers → authentification
